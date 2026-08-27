@@ -1,0 +1,15 @@
+Restart PC
+   ↓
+Open Ubuntu
+   ↓
+Start/check Docker Engine
+   ↓
+cd ~/XAU-LEAN
+   ↓
+source .venv/bin/activate
+   ↓
+code .
+   ↓
+Work on strategy
+   ↓
+LEAN backtest / paper trading
