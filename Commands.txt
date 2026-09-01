@@ -1,15 +1,72 @@
-Restart PC
-   ↓
-Open Ubuntu
-   ↓
-Start/check Docker Engine
-   ↓
+# ==========================================
+# XAU-LEAN MORNING STARTUP
+# ==========================================
+
+# 1. Navigate to project
 cd ~/XAU-LEAN
-   ↓
+
+# 2. Activate Python environment
 source .venv/bin/activate
-   ↓
+
+# 3. Start Docker Engine
+sudo service docker start
+
+# 4. Verify Python
+python --version
+which python
+
+# 5. Verify XAU-LEAN package
+python -c "import xau_lean; print('XAU-LEAN package OK')"
+
+# 6. Verify UV
+uv --version
+
+# 7. Verify LEAN CLI
+lean --version
+which lean
+
+# 8. Verify Docker
+docker info >/dev/null && echo "Docker Engine OK"
+
+# 9. Verify LEAN Engine image
+docker image inspect quantconnect/lean:latest >/dev/null && echo "LEAN Engine image OK"
+
+# 10. Verify Git
+git status
+git branch --show-current
+
+# 11. Open project in VS Code
 code .
-   ↓
-Work on strategy
-   ↓
-LEAN backtest / paper trading
+
+
+One thing I want you to preserve
+
+Don't delete the metadata files we just copied.
+
+These are now part of our local LEAN runtime foundation:
+
+data/market-hours/market-hours-database.json
+data/symbol-properties/symbol-properties-database.csv
+
+And your current successful command is our known-good LEAN engine smoke-test command:
+
+docker run --rm \
+  -v "$PWD:/Lean/workspace" \
+  quantconnect/lean:latest \
+  --algorithm-language Python \
+  --algorithm-location /Lean/workspace/algorithms/SmokeTest.py \
+  --data-folder /Lean/workspace/data
+
+Keep that. It's our baseline diagnostic command.
+
+If LEAN ever breaks later, we can run this exact test to distinguish:
+
+engine/environment problem vs XAU-LEAN code/data problem.
+
+Current status
+
+Phase 1.1 — Environment / LEAN runtime integration: essentially PASSED ✅
+
+Phase 1.2 — XAUUSD local historical data integration: NEXT 🔜
+
+And we're still following the original XAU-LEAN architecture rather than bending the project around the QuantConnect subscription requirement.

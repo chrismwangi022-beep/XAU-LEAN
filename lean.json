@@ -1,0 +1,11 @@
+{
+  "algorithm-language": "Python",
+  "data-folder": "data",
+  "debugging": false,
+  "show-missing-data-logs": true,
+  "force-exchange-always-open": false,
+  "maximum-warmup-history-days-look-back": 5,
+  "python-additional-paths": [
+    "src"
+  ]
+}
