@@ -22,3 +22,6 @@ logs/*
 !.env.example
 
 .DS_Store
+
+# Canonical Dukascopy historical dataset — kept outside Git
+data/external/dukascopy/Market-Data-Lab-main/xauusd/
