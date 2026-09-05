@@ -258,55 +258,137 @@ def aggregate_bars(
     timeframe: Timeframe,
 ) -> Iterator[TimeframeCandle]:
     """
-    Stream chronological M1 BID/ASK bars into timeframe candles.
+    Aggregate chronological M1 BID/ASK bars into one timeframe.
 
-    Missing M1 observations are NOT fabricated.
-
-    Intervals containing no observations are not emitted. Use
-    find_gaps() to explicitly detect missing periods between observations.
+    The function is fully streaming and does not materialize the complete
+    input dataset.
     """
-    current_start: datetime | None = None
+    current_interval: datetime | None = None
     group: list[DukascopyBar] = []
-
     previous_timestamp: datetime | None = None
 
-    for bar in bars:
-        timestamp = _ensure_utc(bar.timestamp)
+    for raw_bar in bars:
+        timestamp = _ensure_utc(raw_bar.timestamp)
 
-        if previous_timestamp is not None and timestamp <= previous_timestamp:
+        if (
+            previous_timestamp is not None
+            and timestamp <= previous_timestamp
+        ):
             raise ValueError(
-                "Input bars must be strictly chronological"
+                "bars must be strictly chronological"
             )
 
         previous_timestamp = timestamp
 
-        normalized_bar = DukascopyBar(
-            timestamp=timestamp,
-            bid_open=bar.bid_open,
-            bid_high=bar.bid_high,
-            bid_low=bar.bid_low,
-            bid_close=bar.bid_close,
-            ask_open=bar.ask_open,
-            ask_high=bar.ask_high,
-            ask_low=bar.ask_low,
-            ask_close=bar.ask_close,
-        )
+        bucket = interval_start(timestamp, timeframe)
 
-        start = interval_start(timestamp, timeframe)
+        if current_interval is None:
+            current_interval = bucket
 
-        if current_start is None:
-            current_start = start
+        if bucket != current_interval:
+            if group:
+                yield _aggregate_group(
+                    group,
+                    timeframe,
+                )
 
-        if start != current_start:
-            yield _aggregate_group(group, timeframe)
-
+            current_interval = bucket
             group = []
-            current_start = start
 
-        group.append(normalized_bar)
+        group.append(raw_bar)
 
     if group:
-        yield _aggregate_group(group, timeframe)
+        yield _aggregate_group(
+            group,
+            timeframe,
+        )
+
+
+def aggregate_timeframe(
+    bars: Iterable[DukascopyBar],
+    timeframe: Timeframe,
+) -> Iterator[TimeframeCandle]:
+    """Streaming alias for aggregate_bars()."""
+    yield from aggregate_bars(
+        bars,
+        timeframe,
+    )
+
+
+def aggregate_timeframes(
+    bars: Iterable[DukascopyBar],
+    timeframes: Iterable[Timeframe],
+) -> Iterator[tuple[Timeframe, TimeframeCandle]]:
+    """
+    Stream one chronological M1 source into multiple timeframes.
+
+    Each M1 observation is consumed exactly once. A small active aggregation
+    group is maintained for each requested timeframe.
+
+    Results are yielded as (timeframe, candle) pairs whenever an aggregation
+    interval closes.
+
+    Completely absent intervals are not fabricated.
+    """
+    selected_timeframes = tuple(dict.fromkeys(timeframes))
+
+    if not selected_timeframes:
+        raise ValueError("At least one timeframe is required")
+
+    groups: dict[Timeframe, list[DukascopyBar]] = {}
+    current_intervals: dict[Timeframe, datetime] = {}
+
+    previous_timestamp: datetime | None = None
+
+    for raw_bar in bars:
+        timestamp = _ensure_utc(raw_bar.timestamp)
+
+        if (
+            previous_timestamp is not None
+            and timestamp <= previous_timestamp
+        ):
+            raise ValueError(
+                "bars must be strictly chronological"
+            )
+
+        previous_timestamp = timestamp
+
+        for timeframe in selected_timeframes:
+            bucket = interval_start(
+                timestamp,
+                timeframe,
+            )
+
+            if timeframe not in current_intervals:
+                current_intervals[timeframe] = bucket
+                groups[timeframe] = [raw_bar]
+                continue
+
+            if bucket != current_intervals[timeframe]:
+                yield (
+                    timeframe,
+                    _aggregate_group(
+                        groups[timeframe],
+                        timeframe,
+                    ),
+                )
+
+                current_intervals[timeframe] = bucket
+                groups[timeframe] = [raw_bar]
+            else:
+                groups[timeframe].append(raw_bar)
+
+    for timeframe in selected_timeframes:
+        group = groups.get(timeframe)
+
+        if group:
+            yield (
+                timeframe,
+                _aggregate_group(
+                    group,
+                    timeframe,
+                ),
+            )
 
 
 def find_gaps(
@@ -315,33 +397,36 @@ def find_gaps(
     minimum_gap_minutes: int = 2,
 ) -> Iterator[TimeframeGap]:
     """
-    Stream M1 observations and report timestamp gaps.
+    Detect gaps between consecutive observed M1 timestamps.
 
-    A gap of N missing minutes is reported when consecutive observed
-    timestamps are more than one minute apart.
-
-    Weekend and session closures are intentionally NOT removed here.
-    Classification belongs to the session/research layer.
+    Session closures and weekends are intentionally not classified here.
+    This function reports temporal gaps only.
     """
     if minimum_gap_minutes < 1:
-        raise ValueError("minimum_gap_minutes must be >= 1")
+        raise ValueError("minimum_gap_minutes must be at least 1")
 
     previous_timestamp: datetime | None = None
 
-    for bar in bars:
-        timestamp = _ensure_utc(bar.timestamp)
+    for raw_bar in bars:
+        timestamp = _ensure_utc(raw_bar.timestamp)
 
-        if previous_timestamp is not None:
-            if timestamp <= previous_timestamp:
-                raise ValueError(
-                    "Input bars must be strictly chronological"
-                )
-
-            elapsed_minutes = int(
-                (timestamp - previous_timestamp).total_seconds() // 60
+        if (
+            previous_timestamp is not None
+            and timestamp <= previous_timestamp
+        ):
+            raise ValueError(
+                "bars must be strictly chronological"
             )
 
-            missing_minutes = max(0, elapsed_minutes - 1)
+        if previous_timestamp is not None:
+            elapsed_minutes = int(
+                (
+                    timestamp - previous_timestamp
+                ).total_seconds()
+                // 60
+            )
+
+            missing_minutes = elapsed_minutes - 1
 
             if missing_minutes >= minimum_gap_minutes:
                 yield TimeframeGap(
@@ -353,19 +438,6 @@ def find_gaps(
         previous_timestamp = timestamp
 
 
-def aggregate_timeframe(
-    bars: Iterable[DukascopyBar],
-    timeframe: Timeframe,
-) -> Iterator[TimeframeCandle]:
-    """
-    Explicit streaming alias for aggregate_bars().
-
-    This name is intended for research pipelines where the streaming
-    behavior should be obvious at the call site.
-    """
-    yield from aggregate_bars(bars, timeframe)
-
-
 __all__ = [
     "Timeframe",
     "TimeframeCandle",
@@ -373,5 +445,6 @@ __all__ = [
     "interval_start",
     "aggregate_bars",
     "aggregate_timeframe",
+    "aggregate_timeframes",
     "find_gaps",
 ]

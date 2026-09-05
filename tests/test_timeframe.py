@@ -6,6 +6,8 @@ from xau_lean.data.dukascopy import DukascopyBar
 from xau_lean.research.timeframe import (
     Timeframe,
     aggregate_bars,
+    aggregate_timeframes,
+    find_gaps,
     interval_start,
 )
 
@@ -278,8 +280,6 @@ def test_cross_boundary_aggregation_is_deterministic():
 
 
 def test_find_gaps_detects_missing_minutes():
-    from xau_lean.research.timeframe import find_gaps
-
     bars = [
         make_bar(0),
         make_bar(1),
@@ -295,16 +295,12 @@ def test_find_gaps_detects_missing_minutes():
 
 
 def test_find_gaps_does_not_report_normal_one_minute_spacing():
-    from xau_lean.research.timeframe import find_gaps
-
     bars = [make_bar(i) for i in range(5)]
 
     assert list(find_gaps(bars)) == []
 
 
 def test_find_gaps_requires_chronological_input():
-    from xau_lean.research.timeframe import find_gaps
-
     bars = [
         make_bar(2),
         make_bar(1),
@@ -328,3 +324,132 @@ def test_streaming_aggregation_accepts_generators():
 
     assert len(candles) == 1
     assert candles[0].complete is True
+
+
+def test_multi_timeframe_aggregation_uses_one_stream():
+    bars = [
+        make_bar(minute)
+        for minute in range(15)
+    ]
+
+    results = list(
+        aggregate_timeframes(
+            bars,
+            [
+                Timeframe.M5,
+                Timeframe.M15,
+            ],
+        )
+    )
+
+    m5 = [
+        candle
+        for timeframe, candle in results
+        if timeframe is Timeframe.M5
+    ]
+
+    m15 = [
+        candle
+        for timeframe, candle in results
+        if timeframe is Timeframe.M15
+    ]
+
+    assert len(m5) == 3
+    assert len(m15) == 1
+
+    assert [candle.observed_m1 for candle in m5] == [
+        5,
+        5,
+        5,
+    ]
+
+    assert m15[0].observed_m1 == 15
+
+    assert all(candle.complete for candle in m5)
+    assert m15[0].complete is True
+
+
+def test_multi_timeframe_preserves_partial_candles():
+    bars = [
+        make_bar(minute)
+        for minute in range(7)
+    ]
+
+    results = list(
+        aggregate_timeframes(
+            bars,
+            [Timeframe.M5],
+        )
+    )
+
+    candles = [
+        candle
+        for timeframe, candle in results
+        if timeframe is Timeframe.M5
+    ]
+
+    assert len(candles) == 2
+    assert candles[0].observed_m1 == 5
+    assert candles[0].complete is True
+    assert candles[1].observed_m1 == 2
+    assert candles[1].complete is False
+
+
+def test_multi_timeframe_accepts_generator():
+    def bar_generator():
+        for minute in range(15):
+            yield make_bar(minute)
+
+    results = list(
+        aggregate_timeframes(
+            bar_generator(),
+            [
+                Timeframe.M5,
+                Timeframe.M15,
+            ],
+        )
+    )
+
+    assert sum(
+        timeframe is Timeframe.M5
+        for timeframe, _ in results
+    ) == 3
+
+    assert sum(
+        timeframe is Timeframe.M15
+        for timeframe, _ in results
+    ) == 1
+
+
+def test_multi_timeframe_requires_timeframe():
+    with pytest.raises(
+        ValueError,
+        match="At least one timeframe",
+    ):
+        list(
+            aggregate_timeframes(
+                [make_bar(0)],
+                [],
+            )
+        )
+
+
+def test_multi_timeframe_requires_chronological_input():
+    bars = [
+        make_bar(1),
+        make_bar(0),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="strictly chronological",
+    ):
+        list(
+            aggregate_timeframes(
+                bars,
+                [
+                    Timeframe.M5,
+                    Timeframe.H1,
+                ],
+            )
+        )
