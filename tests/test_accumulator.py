@@ -214,3 +214,31 @@ def test_online_median_memory_is_bounded():
     assert median._heights is not None
     assert len(median._heights) == 5
     assert len(median._initial) == 0
+
+
+def test_accumulator_reports_median_body():
+    candles = [
+        make_candle(
+            datetime(
+                2020, 1, 1, 0, i * 5,
+                tzinfo=timezone.utc,
+            ),
+            100 + i,
+            102 + i,
+            99 + i,
+            101 + i,
+        )
+        for i in range(5)
+    ]
+
+    accumulator = ResearchAccumulator(
+        metadata=metadata(),
+        atr_period=14,
+    )
+
+    accumulator.update_many(candles)
+
+    report = accumulator.build_report()
+
+    assert report.median_body is not None
+    assert report.median_body == pytest.approx(1.0)

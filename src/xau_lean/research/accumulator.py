@@ -205,6 +205,7 @@ class ResearchAccumulator:
         self._range = _OnlineMoments()
         self._range_median = _OnlineMedian()
         self._body = _OnlineMoments()
+        self._body_median = _OnlineMedian()
         self._body_ratio = _OnlineMoments()
 
         self._spread = _OnlineMoments()
@@ -253,6 +254,7 @@ class ResearchAccumulator:
         self._range.update(candle_range)
         self._range_median.update(candle_range)
         self._body.update(body)
+        self._body_median.update(body)
 
         if candle_range > 0:
             self._body_ratio.update(body / candle_range)
@@ -371,7 +373,7 @@ class ResearchAccumulator:
             mean_body=(
                 self._body.mean if self._body.count else None
             ),
-            median_body=None,
+            median_body=self._body_median.median,
             mean_body_ratio=(
                 self._body_ratio.mean
                 if self._body_ratio.count

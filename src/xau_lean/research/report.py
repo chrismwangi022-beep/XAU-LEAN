@@ -71,7 +71,7 @@ class ResearchReport:
 
     def to_dict(self) -> dict[str, Any]:
         """
-        Convert the report into a deterministic serializable dictionary.
+        Convert the report into a serializable dictionary.
         """
 
         return {

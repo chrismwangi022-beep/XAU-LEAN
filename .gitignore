@@ -25,3 +25,6 @@ logs/*
 
 # Canonical Dukascopy historical dataset — kept outside Git
 data/external/dukascopy/Market-Data-Lab-main/xauusd/
+
+# Generated Phase 6 research reports
+research_results/*
