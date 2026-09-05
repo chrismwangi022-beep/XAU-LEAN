@@ -95,9 +95,11 @@ def test_accumulator_counts_and_direction():
     assert report.reversal_rate == pytest.approx(0.5)
 
     assert report.mean_range == pytest.approx((10 + 8 + 8) / 3)
+    assert report.median_range == pytest.approx(8.0)
     assert report.mean_body == pytest.approx((3 + 3 + 2) / 3)
 
     assert report.mean_spread == pytest.approx(1.1666666667)
+    assert report.median_spread == pytest.approx(1.0)
     assert report.spread_ge_050_pct == pytest.approx(1.0)
     assert report.spread_ge_100_pct == pytest.approx(2 / 3)
     assert report.spread_ge_200_pct == pytest.approx(1 / 3)
@@ -165,3 +167,50 @@ def test_accumulator_requires_timezone():
 
     with pytest.raises(ValueError, match="timezone-aware"):
         accumulator.update(candle)
+
+
+def test_online_median_empty_and_small_samples():
+    from xau_lean.research.accumulator import _OnlineMedian
+
+    median = _OnlineMedian()
+    assert median.median is None
+
+    for value in [10.0, 2.0, 7.0, 4.0]:
+        median.update(value)
+
+    assert median.median == pytest.approx(5.5)
+
+
+def test_online_median_exact_five_sample_initialization():
+    from xau_lean.research.accumulator import _OnlineMedian
+
+    median = _OnlineMedian()
+
+    for value in [9.0, 1.0, 7.0, 3.0, 5.0]:
+        median.update(value)
+
+    assert median.median == pytest.approx(5.0)
+
+
+def test_online_median_tracks_large_ordered_sample():
+    from xau_lean.research.accumulator import _OnlineMedian
+
+    median = _OnlineMedian()
+
+    for value in range(1, 1001):
+        median.update(float(value))
+
+    assert median.median == pytest.approx(500.5, abs=1.0)
+
+
+def test_online_median_memory_is_bounded():
+    from xau_lean.research.accumulator import _OnlineMedian
+
+    median = _OnlineMedian()
+
+    for value in range(1, 10001):
+        median.update(float(value))
+
+    assert median._heights is not None
+    assert len(median._heights) == 5
+    assert len(median._initial) == 0

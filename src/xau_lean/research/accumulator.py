@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from heapq import heappop, heappush
 from math import log, sqrt
 from typing import Iterable
 
@@ -48,31 +47,113 @@ class _OnlineMoments:
 
 @dataclass
 class _OnlineMedian:
-    lower: list[float] = field(default_factory=list)
-    upper: list[float] = field(default_factory=list)
+    """
+    Constant-memory P² estimator for the median (q=0.5).
+
+    The first five observations are retained exactly to initialize the
+    estimator. After initialization, five marker positions/heights are
+    maintained and updated incrementally.
+
+    This avoids retaining millions of observations while providing a
+    deterministic online estimate of the median. The reported value is therefore an estimate rather than an exact sample median.
+    """
+
+    _initial: list[float] = field(default_factory=list)
+    _heights: list[float] | None = None
+    _positions: list[float] | None = None
+    _desired_positions: list[float] | None = None
+    _count: int = 0
 
     def update(self, value: float) -> None:
-        if not self.lower or value <= -self.lower[0]:
-            heappush(self.lower, -value)
+        self._count += 1
+
+        if self._heights is None:
+            self._initial.append(value)
+
+            if len(self._initial) < 5:
+                return
+
+            self._initial.sort()
+
+            self._heights = list(self._initial)
+            self._positions = [1.0, 2.0, 3.0, 4.0, 5.0]
+            self._desired_positions = [1.0, 2.0, 3.0, 4.0, 5.0]
+            self._initial.clear()
+            return
+
+        heights = self._heights
+        positions = self._positions
+        desired = self._desired_positions
+
+        assert heights is not None
+        assert positions is not None
+        assert desired is not None
+
+        if value < heights[0]:
+            heights[0] = value
+            k = 0
+        elif value >= heights[4]:
+            heights[4] = value
+            k = 3
         else:
-            heappush(self.upper, value)
+            k = 0
+            while k < 3 and value >= heights[k + 1]:
+                k += 1
 
-        if len(self.lower) > len(self.upper) + 1:
-            heappush(self.upper, -heappop(self.lower))
+        for i in range(k + 1, 5):
+            positions[i] += 1.0
 
-        if len(self.upper) > len(self.lower):
-            heappush(self.lower, -heappop(self.upper))
+        desired[0] += 0.0
+        desired[1] += 0.25
+        desired[2] += 0.5
+        desired[3] += 0.75
+        desired[4] += 1.0
+
+        for i in range(1, 4):
+            d = desired[i] - positions[i]
+
+            if (d >= 1.0 and positions[i + 1] - positions[i] > 1.0) or (
+                d <= -1.0 and positions[i - 1] - positions[i] < -1.0
+            ):
+                direction = 1.0 if d >= 1.0 else -1.0
+
+                proposed = heights[i] + direction / (
+                    positions[i + 1] - positions[i - 1]
+                ) * (
+                    (positions[i] - positions[i - 1] + direction)
+                    * (heights[i + 1] - heights[i])
+                    / (positions[i + 1] - positions[i])
+                    + (positions[i + 1] - positions[i] - direction)
+                    * (heights[i] - heights[i - 1])
+                    / (positions[i] - positions[i - 1])
+                )
+
+                if heights[i - 1] < proposed < heights[i + 1]:
+                    heights[i] = proposed
+                else:
+                    neighbor = int(i + direction)
+                    heights[i] += direction * (
+                        heights[neighbor] - heights[i]
+                    ) / (positions[neighbor] - positions[i])
+
+                positions[i] += direction
 
     @property
     def median(self) -> float | None:
-        total = len(self.lower) + len(self.upper)
-        if total == 0:
+        if self._count == 0:
             return None
 
-        if len(self.lower) > len(self.upper):
-            return -self.lower[0]
+        if self._heights is None:
+            values = sorted(self._initial)
 
-        return (-self.lower[0] + self.upper[0]) / 2.0
+            middle = len(values) // 2
+
+            if len(values) % 2:
+                return values[middle]
+
+            return (values[middle - 1] + values[middle]) / 2.0
+
+        return self._heights[2]
 
 
 class ResearchAccumulator:
@@ -122,10 +203,12 @@ class ResearchAccumulator:
         self._previous_close: float | None = None
 
         self._range = _OnlineMoments()
+        self._range_median = _OnlineMedian()
         self._body = _OnlineMoments()
         self._body_ratio = _OnlineMoments()
 
         self._spread = _OnlineMoments()
+        self._spread_median = _OnlineMedian()
         self._spread_to_range = _OnlineMoments()
 
         self._log_returns = _OnlineMoments()
@@ -168,6 +251,7 @@ class ResearchAccumulator:
         body = candle.bid_body
 
         self._range.update(candle_range)
+        self._range_median.update(candle_range)
         self._body.update(body)
 
         if candle_range > 0:
@@ -225,6 +309,7 @@ class ResearchAccumulator:
 
         if spread is not None:
             self._spread.update(spread)
+            self._spread_median.update(spread)
             self._spread_observation_count += 1
 
             for threshold in self._spread_thresholds:
@@ -282,7 +367,7 @@ class ResearchAccumulator:
             mean_range=(
                 self._range.mean if self._range.count else None
             ),
-            median_range=None,
+            median_range=self._range_median.median,
             mean_body=(
                 self._body.mean if self._body.count else None
             ),
@@ -303,7 +388,7 @@ class ResearchAccumulator:
                 if self._spread.count
                 else None
             ),
-            median_spread=None,
+            median_spread=self._spread_median.median,
             mean_spread_to_range=(
                 self._spread_to_range.mean
                 if self._spread_to_range.count
