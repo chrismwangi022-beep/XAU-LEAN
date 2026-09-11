@@ -25,13 +25,25 @@ Walk-forward windows
 
 Selection is performed using TRAINING data only.
 
+Training candidate selection rule
+---------------------------------
 A candidate must:
-    - have >= MIN_PERIOD_SAMPLE observations in every adequate
-      historical training subperiod;
-    - have the same directional sign across all adequate training
-      subperiods;
-    - have >= MIN_TRAIN_EDGE_PP absolute edge in every adequate
-      training subperiod.
+
+    - have >= MIN_PERIOD_SAMPLE observations in at least
+      two adequate historical training subperiods;
+
+    - have positive directional edge in a strict majority
+      of adequate training subperiods;
+
+    - have mean training edge >= MIN_TRAIN_EDGE_PP;
+
+    - have no adequate training period with a material
+      reversal worse than -MAX_TRAIN_REVERSAL_PP.
+
+This is intentionally less restrictive than requiring every historical
+period to have the same sign and >=2pp edge. The purpose is to allow
+genuine regime-dependent effects to reach the chronological OOS test
+without allowing severe historical reversals.
 
 OOS is then completely frozen.
 
@@ -95,7 +107,12 @@ DEFAULT_OUTPUT_ROOT = (
 )
 
 MIN_PERIOD_SAMPLE = 100
+
+# Minimum mean historical directional edge required for selection.
 MIN_TRAIN_EDGE_PP = 2.0
+
+# A single historical period may be negative, but not materially so.
+MAX_TRAIN_REVERSAL_PP = 2.0
 
 BOOTSTRAP_REPLICATES = 3000
 BOOTSTRAP_SEED = 6306
@@ -544,9 +561,19 @@ def directional_stats(
 # ---------------------------------------------------------------------------
 
 def candidate_key(observation: Observation) -> tuple:
+    """
+    Return the structural identity of a directional candidate.
+
+    Chronological research periods are evaluation partitions, not
+    candidate-defining features. Candidate identity must therefore
+    remain constant across historical training periods.
+
+    Candidate identity:
+        timeframe | volatility bucket | direction | horizon
+    """
+
     return (
         observation.timeframe,
-        observation.regime,
         observation.bucket,
         observation.direction,
         observation.horizon_candles,
@@ -554,10 +581,10 @@ def candidate_key(observation: Observation) -> tuple:
 
 
 def key_string(key: tuple) -> str:
-    timeframe, regime, bucket, direction, horizon = key
+    timeframe, bucket, direction, horizon = key
 
     return (
-        f"{timeframe}|{regime}|{bucket}|"
+        f"{timeframe}|{bucket}|"
         f"{direction}|H{horizon}"
     )
 
@@ -586,12 +613,30 @@ def select_training_candidates(
     train_start: datetime,
     train_end: datetime,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Select candidates using training data only.
+
+    Selection rule:
+
+    1. At least two adequate historical training periods.
+    2. Positive training edge in a strict majority of adequate periods.
+    3. Mean training edge >= MIN_TRAIN_EDGE_PP.
+    4. No adequate training period may have a material reversal
+       worse than -MAX_TRAIN_REVERSAL_PP.
+
+    Negative-edge candidates are NOT inverted. They are rejected because
+    the research question is whether the original directional relationship
+    survives chronologically.
+    """
+
     train_observations = [
         observation
         for observation in observations
-        if train_start
-        <= observation.signal_timestamp
-        < train_end
+        if (
+            train_start
+            <= observation.signal_timestamp
+            < train_end
+        )
     ]
 
     groups: dict[tuple, list[Observation]] = {}
@@ -645,7 +690,9 @@ def select_training_candidates(
         reasons = []
 
         if len(adequate) < 2:
-            reasons.append("insufficient_training_periods")
+            reasons.append(
+                "insufficient_training_periods"
+            )
 
         edges = [
             period["edge_pp"]
@@ -653,39 +700,83 @@ def select_training_candidates(
             if period["edge_pp"] is not None
         ]
 
-        if edges:
-            signs = [
-                1 if edge > 0 else -1
-                for edge in edges
-            ]
+        positive_periods = sum(
+            1
+            for edge in edges
+            if edge > 0.0
+        )
 
-            if len(set(signs)) != 1:
-                reasons.append("contradictory_training_sign")
+        negative_periods = sum(
+            1
+            for edge in edges
+            if edge < 0.0
+        )
 
-            if any(
-                abs(edge) < MIN_TRAIN_EDGE_PP
-                for edge in edges
-            ):
-                reasons.append("training_effect_below_threshold")
+        mean_training_edge = (
+            sum(edges) / len(edges)
+            if edges
+            else None
+        )
+
+        worst_training_edge = (
+            min(edges)
+            if edges
+            else None
+        )
+
+        if not edges:
+            reasons.append(
+                "no_training_edge"
+            )
         else:
-            reasons.append("no_training_edge")
+            if positive_periods <= len(edges) / 2:
+                reasons.append(
+                    "positive_edge_not_in_majority"
+                )
+
+            if (
+                mean_training_edge is not None
+                and mean_training_edge < MIN_TRAIN_EDGE_PP
+            ):
+                reasons.append(
+                    "mean_training_effect_below_threshold"
+                )
+
+            if (
+                worst_training_edge is not None
+                and worst_training_edge
+                < -MAX_TRAIN_REVERSAL_PP
+            ):
+                reasons.append(
+                    "material_training_reversal"
+                )
 
         train_stats = directional_stats(group)
 
         result = {
             "candidate": key_string(key),
             "timeframe": key[0],
-            "regime": key[1],
-            "bucket": key[2],
-            "direction": key[3],
-            "horizon_candles": key[4],
+            "bucket": key[1],
+            "direction": key[2],
+            "horizon_candles": key[3],
             "training_periods": period_results,
             "adequate_periods": len(adequate),
+            "positive_training_periods": positive_periods,
+            "negative_training_periods": negative_periods,
+            "mean_training_edge_pp": mean_training_edge,
+            "worst_training_edge_pp": worst_training_edge,
             "training": train_stats,
             "selection_rule": {
                 "minimum_period_sample": MIN_PERIOD_SAMPLE,
-                "minimum_absolute_edge_pp": MIN_TRAIN_EDGE_PP,
-                "required_same_sign": True,
+                "minimum_adequate_periods": 2,
+                "minimum_mean_training_edge_pp": (
+                    MIN_TRAIN_EDGE_PP
+                ),
+                "positive_edge_majority": True,
+                "maximum_material_reversal_pp": (
+                    MAX_TRAIN_REVERSAL_PP
+                ),
+                "training_only": True,
             },
         }
 
@@ -1055,12 +1146,11 @@ def evaluate_window(
 
         for selection in selected:
             key = (
-                selection["timeframe"],
-                selection["regime"],
-                selection["bucket"],
-                selection["direction"],
-                selection["horizon_candles"],
-            )
+    selection["timeframe"],
+    selection["bucket"],
+    selection["direction"],
+    selection["horizon_candles"],
+)
 
             oos_observations = [
                 observation
@@ -1091,7 +1181,7 @@ def evaluate_window(
             bootstrap = (
                 moving_block_bootstrap_mean(
                     signed_values,
-                    horizon=key[4],
+                    horizon=key[3],
                     replicates=bootstrap_replicates,
                     seed=seed,
                 )
@@ -1114,10 +1204,9 @@ def evaluate_window(
                 {
                     "candidate": selection["candidate"],
                     "timeframe": timeframe,
-                    "regime": key[1],
-                    "bucket": key[2],
-                    "direction": key[3],
-                    "horizon_candles": key[4],
+                    "bucket": key[1],
+                    "direction": key[2],
+                    "horizon_candles": key[3],
                     "training": selection["training"],
                     "training_periods": selection["training_periods"],
                     "oos": {
@@ -1149,10 +1238,18 @@ def evaluate_window(
         "candidate_selection": {
             "selected": len(selected_all),
             "rejected": len(rejected_all),
+            "selected_candidates": selected_all,
+            "rejected_candidates": rejected_all,
             "selection_rule": {
                 "minimum_period_sample": MIN_PERIOD_SAMPLE,
-                "minimum_absolute_edge_pp": MIN_TRAIN_EDGE_PP,
-                "same_sign_across_training_periods": True,
+                "minimum_adequate_periods": 2,
+                "minimum_mean_training_edge_pp": (
+                    MIN_TRAIN_EDGE_PP
+                ),
+                "positive_edge_majority": True,
+                "maximum_material_reversal_pp": (
+                    MAX_TRAIN_REVERSAL_PP
+                ),
                 "training_only": True,
             },
         },
@@ -1176,7 +1273,6 @@ def write_csv(
             "walkforward_id": evaluation["window"]["id"],
             "candidate": evaluation["candidate"],
             "timeframe": evaluation["timeframe"],
-            "regime": evaluation["regime"],
             "bucket": evaluation["bucket"],
             "direction": evaluation["direction"],
             "horizon_candles": evaluation["horizon_candles"],
@@ -1461,6 +1557,13 @@ def print_results(
         "for OOS selection."
     )
     print(
+        "Training selection allows a non-material historical "
+        "reversal but rejects material reversals."
+    )
+    print(
+        "Negative-edge candidates were NOT inverted."
+    )
+    print(
         "Positive OOS evidence is not automatically a "
         "tradable strategy."
     )
@@ -1588,8 +1691,15 @@ def main() -> int:
         f"Min period n: {MIN_PERIOD_SAMPLE}"
     )
     print(
-        f"Min train edge: "
+        f"Min adequate periods: 2"
+    )
+    print(
+        f"Min mean train edge: "
         f"{MIN_TRAIN_EDGE_PP:.1f}pp"
+    )
+    print(
+        f"Max material reversal: "
+        f"-{MAX_TRAIN_REVERSAL_PP:.1f}pp"
     )
     print(
         f"Bootstrap:    {args.bootstrap_replicates}"
@@ -1692,10 +1802,15 @@ def main() -> int:
             "minimum_period_sample": (
                 MIN_PERIOD_SAMPLE
             ),
-            "minimum_training_edge_pp": (
+            "minimum_adequate_periods": 2,
+            "minimum_mean_training_edge_pp": (
                 MIN_TRAIN_EDGE_PP
             ),
-            "same_sign_across_training_periods": True,
+            "positive_edge_majority": True,
+            "maximum_material_reversal_pp": (
+                MAX_TRAIN_REVERSAL_PP
+            ),
+            "training_only": True,
         },
         "walk_forward_windows": WALKFORWARD_WINDOWS,
         "windows": window_results,
