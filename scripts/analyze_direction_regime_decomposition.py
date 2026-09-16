@@ -614,10 +614,16 @@ def main() -> int:
     print(f"reversal             {state_counts['reversal']:>8,}")
     print(f"unclassified         {state_counts['unclassified']:>8,}")
 
-    if missing or state_counts["unclassified"]:
+    if missing:
         print()
-        print("FATAL: decomposition is not fully classified; refusing to analyze.")
+        print(
+            "FATAL: canonical observations are missing persistence "
+            "classification; refusing to analyze."
+        )
         return 2
+
+    # The first non-flat signal is intentionally unclassified and is excluded
+    # from the persistence/reversal decomposition by compact_decomposed().
 
     # -------------------------------------------------------------------------
     # Full-sample decomposition.
@@ -744,7 +750,11 @@ def main() -> int:
                 result = analyze_state(
                     state_observations,
                     horizon=horizon,
-                    seed=seed_base + state_index * 100 + abs(hash(name)) % 100000,
+                    seed=(
+                        seed_base
+                        + state_index * 100
+                        + stable_seed(name)
+                    ),
                     bootstrap_replicates=args.bootstrap_replicates,
                 )
                 period_result[state] = result
@@ -815,7 +825,10 @@ def main() -> int:
             "end": end.isoformat(),
             "bootstrap_replicates": args.bootstrap_replicates,
             "bootstrap_seed": args.bootstrap_seed,
-            "block_rule": "max(horizon, round(sqrt(n)), 5), capped at 60",
+            "block_rule": (
+                "min(50, max(5, horizon, round(sqrt(n)))) "
+                "(canonical Phase 6.3B rule)"
+            ),
             "strategy_modification": False,
             "candidate_selection": False,
         },
