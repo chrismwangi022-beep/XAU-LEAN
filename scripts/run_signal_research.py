@@ -431,8 +431,20 @@ def run(
         for timeframe in timeframes
     }
 
-    # Completed ATR values.
-    atr_values: dict[
+    # Rolling True Range windows used to calculate canonical ATR.
+    tr_windows: dict[
+        Timeframe,
+        deque[float],
+    ] = {
+        timeframe: deque(
+            maxlen=ATR_PERIOD
+        )
+        for timeframe in timeframes
+    }
+
+    # Completed ATR values used exclusively for the historical baseline.
+    # The current ATR is appended only AFTER current classification.
+    atr_history: dict[
         Timeframe,
         deque[float],
     ] = {
@@ -517,88 +529,82 @@ def run(
 
         # ---------------------------------------------------------
         # STEP 3
-        # Calculate CURRENT ATR(14).
+        # Calculate canonical rolling ATR(14).
         #
-        # Current ATR uses the current candle.
-        # Baseline uses ONLY ATR values from earlier candles.
+        # ATR is the arithmetic mean of the most recent 14 TRs.
+        # The current candle's TR is included in the current ATR.
         # ---------------------------------------------------------
 
-        atr_history = atr_values[timeframe]
+        tr_window = tr_windows[timeframe]
+        tr_window.append(tr)
 
-        if len(atr_history) >= ATR_PERIOD:
-            prior_atr_values = list(atr_history)[
-                -ATR_PERIOD:
-            ]
+        if len(tr_window) < ATR_PERIOD:
+            continue
 
-            current_atr = (
-                sum(
-                    prior_atr_values
-                ) + tr
-            ) / ATR_PERIOD
-
-            if len(atr_history) >= BASELINE_PERIOD:
-                baseline_values = list(
-                    atr_history
-                )[-BASELINE_PERIOD:]
-
-                baseline_atr = (
-                    sum(baseline_values)
-                    / len(baseline_values)
-                )
-
-                if baseline_atr > 0:
-                    ratio = (
-                        current_atr
-                        / baseline_atr
-                    )
-
-                    bucket = expansion_bucket(
-                        ratio
-                    )
-
-                    regime = get_regime(
-                        candle.timestamp
-                    )
-
-                    if regime is not None:
-                        # Signal is created AFTER this candle closes.
-                        # It will be entered on the NEXT candle.
-                        for horizon in HORIZONS:
-                            pending[timeframe].append(
-                                PendingSignal(
-                                    regime=regime.name,
-                                    bucket=bucket,
-                                    horizon=horizon,
-                                )
-                            )
-
-                        counts["signals_created"] += len(
-                            HORIZONS
-                        )
-
-                    counts["atr_ready_candles"] += 1
+        current_atr = (
+            sum(tr_window)
+            / ATR_PERIOD
+        )
+        counts["atr_ready_candles"] += 1
 
         # ---------------------------------------------------------
         # STEP 4
+        # Compare current ATR against ONLY PRIOR ATR values.
+        #
+        # The current ATR is deliberately not yet in atr_history.
+        # Therefore the baseline cannot contain current information.
+        # ---------------------------------------------------------
+
+        history = atr_history[timeframe]
+
+        if len(history) < BASELINE_PERIOD:
+            history.append(current_atr)
+            continue
+
+        baseline_atr = (
+            sum(history)
+            / len(history)
+        )
+
+        if baseline_atr > 0:
+            ratio = (
+                current_atr
+                / baseline_atr
+            )
+
+            bucket = expansion_bucket(
+                ratio
+            )
+
+            regime = get_regime(
+                candle.timestamp
+            )
+
+            if regime is not None:
+                # Signal is created AFTER this candle closes.
+                # It will be entered on the NEXT candle.
+                for horizon in HORIZONS:
+                    pending[timeframe].append(
+                        PendingSignal(
+                            regime=regime.name,
+                            bucket=bucket,
+                            horizon=horizon,
+                        )
+                    )
+
+                counts["signals_created"] += len(
+                    HORIZONS
+                )
+
+
+        # ---------------------------------------------------------
+        # STEP 5
         # Store current ATR only AFTER classification.
         #
         # Therefore it cannot contaminate the historical baseline.
         # ---------------------------------------------------------
 
-        if len(atr_history) >= ATR_PERIOD:
-            current_atr_for_history = (
-                sum(
-                    list(atr_history)[-(
-                        ATR_PERIOD - 1
-                    ):]
-                ) + tr
-            ) / ATR_PERIOD
-        else:
-            current_atr_for_history = tr
-
-        atr_history.append(
-            current_atr_for_history
-        )
+        history.append(current_atr)
 
     return accumulator, counts
 
