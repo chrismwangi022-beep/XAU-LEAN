@@ -316,6 +316,208 @@ def percentile(
     )
 
 
+def _bootstrap_interaction_from_sample(
+    observations: list[Observation],
+    bucket: str,
+) -> tuple[float, float]:
+    """
+    Calculate the Phase 6.2B interaction directly from a bootstrap sample.
+
+    This is algebraically identical to interaction_from_observations(),
+    but avoids constructing four intermediate lists for every bootstrap
+    replicate. The canonical interaction_from_observations() remains the
+    reference implementation.
+    """
+    counts = {
+        "bucket_bullish": 0,
+        "bucket_bearish": 0,
+        "normal_bullish": 0,
+        "normal_bearish": 0,
+    }
+
+    correct = {
+        "bucket_bullish": 0,
+        "bucket_bearish": 0,
+        "normal_bullish": 0,
+        "normal_bearish": 0,
+    }
+
+    signed_sums = {
+        "bucket_bullish": 0.0,
+        "bucket_bearish": 0.0,
+        "normal_bullish": 0.0,
+        "normal_bearish": 0.0,
+    }
+
+    for item in observations:
+        if item.bucket == bucket:
+            if item.direction == "bullish":
+                group = "bucket_bullish"
+                is_correct = item.signed_return > 0
+            elif item.direction == "bearish":
+                group = "bucket_bearish"
+                is_correct = item.signed_return < 0
+            else:
+                continue
+        elif item.bucket == "normal":
+            if item.direction == "bullish":
+                group = "normal_bullish"
+                is_correct = item.signed_return > 0
+            elif item.direction == "bearish":
+                group = "normal_bearish"
+                is_correct = item.signed_return < 0
+            else:
+                continue
+        else:
+            continue
+
+        counts[group] += 1
+        signed_sums[group] += item.signed_return
+
+        if is_correct:
+            correct[group] += 1
+
+    if any(counts[group] == 0 for group in counts):
+        return float("nan"), float("nan")
+
+    bucket_accuracy_spread = (
+        correct["bucket_bullish"] / counts["bucket_bullish"]
+        - correct["bucket_bearish"] / counts["bucket_bearish"]
+    )
+
+    normal_accuracy_spread = (
+        correct["normal_bullish"] / counts["normal_bullish"]
+        - correct["normal_bearish"] / counts["normal_bearish"]
+    )
+
+    bucket_return_spread = (
+        signed_sums["bucket_bullish"] / counts["bucket_bullish"]
+        - signed_sums["bucket_bearish"] / counts["bucket_bearish"]
+    )
+
+    normal_return_spread = (
+        signed_sums["normal_bullish"] / counts["normal_bullish"]
+        - signed_sums["normal_bearish"] / counts["normal_bearish"]
+    )
+
+    return (
+        bucket_accuracy_spread - normal_accuracy_spread,
+        bucket_return_spread - normal_return_spread,
+    )
+
+
+def _bootstrap_interaction_from_blocks(
+    observations: list[Observation],
+    block_length: int,
+    rng: random.Random,
+    bucket: str,
+) -> tuple[float, float]:
+    """
+    Calculate the Phase 6.2B interaction from one moving-block
+    bootstrap replicate without materializing the sampled list.
+
+    The block-start RNG sequence is identical to moving_block_sample().
+    """
+    n = len(observations)
+
+    if n == 0:
+        return float("nan"), float("nan")
+
+    if n <= block_length:
+        return _bootstrap_interaction_from_sample(
+            observations,
+            bucket,
+        )
+
+    counts = {
+        "bucket_bullish": 0,
+        "bucket_bearish": 0,
+        "normal_bullish": 0,
+        "normal_bearish": 0,
+    }
+
+    correct = {
+        "bucket_bullish": 0,
+        "bucket_bearish": 0,
+        "normal_bullish": 0,
+        "normal_bearish": 0,
+    }
+
+    signed_sums = {
+        "bucket_bullish": 0.0,
+        "bucket_bearish": 0.0,
+        "normal_bullish": 0.0,
+        "normal_bearish": 0.0,
+    }
+
+    max_start = n - block_length
+    remaining = n
+
+    while remaining > 0:
+        start = rng.randint(0, max_start)
+        length = min(block_length, remaining)
+
+        for index in range(start, start + length):
+            item = observations[index]
+
+            if item.bucket == bucket:
+                if item.direction == "bullish":
+                    group = "bucket_bullish"
+                    is_correct = item.signed_return > 0
+                elif item.direction == "bearish":
+                    group = "bucket_bearish"
+                    is_correct = item.signed_return < 0
+                else:
+                    continue
+            elif item.bucket == "normal":
+                if item.direction == "bullish":
+                    group = "normal_bullish"
+                    is_correct = item.signed_return > 0
+                elif item.direction == "bearish":
+                    group = "normal_bearish"
+                    is_correct = item.signed_return < 0
+                else:
+                    continue
+            else:
+                continue
+
+            counts[group] += 1
+            signed_sums[group] += item.signed_return
+
+            if is_correct:
+                correct[group] += 1
+
+        remaining -= length
+
+    if any(counts[group] == 0 for group in counts):
+        return float("nan"), float("nan")
+
+    bucket_accuracy_spread = (
+        correct["bucket_bullish"] / counts["bucket_bullish"]
+        - correct["bucket_bearish"] / counts["bucket_bearish"]
+    )
+
+    normal_accuracy_spread = (
+        correct["normal_bullish"] / counts["normal_bullish"]
+        - correct["normal_bearish"] / counts["normal_bearish"]
+    )
+
+    bucket_return_spread = (
+        signed_sums["bucket_bullish"] / counts["bucket_bullish"]
+        - signed_sums["bucket_bearish"] / counts["bucket_bearish"]
+    )
+
+    normal_return_spread = (
+        signed_sums["normal_bullish"] / counts["normal_bullish"]
+        - signed_sums["normal_bearish"] / counts["normal_bearish"]
+    )
+
+    return (
+        bucket_accuracy_spread - normal_accuracy_spread,
+        bucket_return_spread - normal_return_spread,
+    )
+
+
 def moving_block_sample(
     observations: list[Observation],
     block_length: int,
@@ -402,14 +604,10 @@ def bootstrap_interaction(
     accuracy_values: list[float] = []
 
     for _ in range(replicates):
-        sample = moving_block_sample(
+        accuracy_value, _ = _bootstrap_interaction_from_blocks(
             ordered,
             block_length,
             rng,
-        )
-
-        accuracy_value, _ = interaction_from_observations(
-            sample,
             bucket,
         )
 
@@ -508,14 +706,10 @@ def bootstrap_signed_return(
     values: list[float] = []
 
     for _ in range(replicates):
-        sample = moving_block_sample(
+        _, value = _bootstrap_interaction_from_blocks(
             ordered,
             block_length,
             rng,
-        )
-
-        _, value = interaction_from_observations(
-            sample,
             bucket,
         )
 
@@ -596,30 +790,30 @@ def build_formal_results(
     results: dict[str, Any] = {}
     csv_rows: list[dict[str, Any]] = []
 
+    indexed_observations: dict[
+        tuple[str, str, int],
+        list[Observation],
+    ] = {}
+
+    for item in observations:
+        key = (
+            item.timeframe,
+            period_name(item.signal_timestamp),
+            item.horizon,
+        )
+        indexed_observations.setdefault(key, []).append(item)
+
     for timeframe in [item.name for item in TIMEFRAMES]:
         results[timeframe] = {}
-
-        timeframe_obs = [
-            item
-            for item in observations
-            if item.timeframe == timeframe
-        ]
 
         for period, _, _ in PERIODS:
             results[timeframe][period] = {}
 
-            period_obs = [
-                item
-                for item in timeframe_obs
-                if period_name(item.signal_timestamp) == period
-            ]
-
             for horizon in HORIZONS:
-                horizon_obs = [
-                    item
-                    for item in period_obs
-                    if item.horizon == horizon
-                ]
+                horizon_obs = indexed_observations.get(
+                    (timeframe, period, horizon),
+                    [],
+                )
 
                 horizon_results: dict[str, Any] = {}
 

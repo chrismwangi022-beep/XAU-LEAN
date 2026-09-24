@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import math
+import random
+import pytest
+
 from datetime import datetime, timedelta, timezone
 
 from scripts.analyze_volatility_direction import Observation
 
 from scripts.analyze_volatility_direction_formal import (
+    _bootstrap_interaction_from_blocks,
+    _bootstrap_interaction_from_sample,
     choose_block_length,
     interaction_from_observations,
     moving_block_sample,
@@ -263,3 +269,148 @@ def test_moving_block_sample_preserves_observation_objects():
         id(item) in original_ids
         for item in sample
     )
+
+
+def test_block_bootstrap_helper_matches_materialized_reference():
+    observations = [
+        Observation(
+            timeframe="M15",
+            regime="normal",
+            bucket=bucket,
+            direction=direction,
+            horizon=1,
+            signal_timestamp=datetime(2024, 1, 1, 0, i, tzinfo=timezone.utc),
+            entry_timestamp=datetime(2024, 1, 1, 0, i + 1, tzinfo=timezone.utc),
+            bid_entry=2000.0,
+            ask_entry=2000.1,
+            bid_exit=2001.0 if direction == "bullish" else 1999.0,
+            ask_exit=2001.1 if direction == "bullish" else 1999.1,
+            signed_return=(
+                0.001 * (i + 1)
+                if direction == "bullish"
+                else -0.001 * (i + 1)
+            ),
+        )
+        for i, (bucket, direction) in enumerate([
+            ("normal", "bullish"),
+            ("normal", "bearish"),
+            ("normal", "bullish"),
+            ("normal", "bearish"),
+            ("high", "bullish"),
+            ("high", "bearish"),
+            ("high", "bullish"),
+            ("high", "bearish"),
+            ("normal", "bullish"),
+            ("normal", "bearish"),
+            ("high", "bullish"),
+            ("high", "bearish"),
+        ])
+    ]
+
+    block_length = 3
+    seed = 63063
+
+    reference_rng = random.Random(seed)
+    optimized_rng = random.Random(seed)
+
+    reference_sample = moving_block_sample(
+        observations,
+        block_length,
+        reference_rng,
+    )
+
+    expected = _bootstrap_interaction_from_sample(
+        reference_sample,
+        "high",
+    )
+
+    actual = _bootstrap_interaction_from_blocks(
+        observations,
+        block_length,
+        optimized_rng,
+        "high",
+    )
+
+    assert actual[0] == pytest.approx(expected[0])
+    assert actual[1] == pytest.approx(expected[1])
+
+
+def test_block_bootstrap_helper_matches_reference_across_replicates():
+    observations = [
+        Observation(
+            timeframe="M15",
+            regime="normal",
+            bucket=bucket,
+            direction=direction,
+            horizon=1,
+            signal_timestamp=datetime(
+                2024, 1, 1, 0, i, tzinfo=timezone.utc
+            ),
+            entry_timestamp=datetime(
+                2024, 1, 1, 0, i + 1, tzinfo=timezone.utc
+            ),
+            bid_entry=2000.0,
+            ask_entry=2000.1,
+            bid_exit=(
+                2001.0 if direction == "bullish" else 1999.0
+            ),
+            ask_exit=(
+                2001.1 if direction == "bullish" else 1999.1
+            ),
+            signed_return=(
+                0.001 * (i + 1)
+                if direction == "bullish"
+                else -0.001 * (i + 1)
+            ),
+        )
+        for i, (bucket, direction) in enumerate([
+            ("normal", "bullish"),
+            ("normal", "bearish"),
+            ("normal", "bullish"),
+            ("normal", "bearish"),
+            ("high", "bullish"),
+            ("high", "bearish"),
+            ("high", "bullish"),
+            ("high", "bearish"),
+            ("normal", "bullish"),
+            ("normal", "bearish"),
+            ("high", "bullish"),
+            ("high", "bearish"),
+        ])
+    ]
+
+    block_length = 3
+    seed = 63063
+    replicates = 100
+
+    reference_rng = random.Random(seed)
+    optimized_rng = random.Random(seed)
+
+    for _ in range(replicates):
+        reference_sample = moving_block_sample(
+            observations,
+            block_length,
+            reference_rng,
+        )
+
+        expected = _bootstrap_interaction_from_sample(
+            reference_sample,
+            "high",
+        )
+
+        actual = _bootstrap_interaction_from_blocks(
+            observations,
+            block_length,
+            optimized_rng,
+            "high",
+        )
+
+        if math.isnan(expected[0]):
+            assert math.isnan(actual[0])
+        else:
+            assert actual[0] == pytest.approx(expected[0])
+
+        if math.isnan(expected[1]):
+            assert math.isnan(actual[1])
+        else:
+            assert actual[1] == pytest.approx(expected[1])
